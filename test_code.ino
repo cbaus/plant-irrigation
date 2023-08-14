@@ -6,6 +6,7 @@
 ESP8266WebServer server(80);
 String header;
 
+bool paused = true;
 bool pumpRunState = false;
 const int waterPumpPort = D0;
 const int moisturePort = D1;
@@ -57,6 +58,31 @@ void log(const String& logText) {
   file.close();
 }
 
+void pumpOn() {
+    Serial.println("#Turning pump on");
+    digitalWrite(waterPumpPort, HIGH);
+    pumpRunState = true;
+    stateChangeTime = runTime;
+    double maxPumpTime_s = min(min(availableWaterInL / L_per_s, wateringAmountPerTime_L / L_per_s), (wateringAmountPerDay_L - wateringAmountDoneToday_L) / L_per_s);
+    Serial.println("Pump time: " + String(maxPumpTime_s) + " s");
+    pumpUntil_ms = stateChangeTime + long(maxPumpTime_s * 1000);
+    Serial.println("Pump until time: " + String(pumpUntil_ms) + " ms");
+}
+
+void pumpOff() {
+    digitalWrite(waterPumpPort, LOW);
+    pumpRunState = false;
+    unsigned long pumpTime_ms = runTime - stateChangeTime;
+    totalPumpTime_ms += pumpTime_ms;
+    auto pumpTime_str = String(pumpTime_ms / 1000);
+    auto totalPumpTime_str = String(totalPumpTime_ms / 1000);
+    availableWaterInL -= double(pumpTime_ms) * L_per_s / 1000.;
+    wateringAmountDoneToday_L += double(pumpTime_ms) * L_per_s / 1000.;
+    lastWatering_ms = runTime;
+    log("Turning pump off after " + pumpTime_str + "s (total: " + totalPumpTime_str + "s)");
+    Serial.println("#Turning pump off after " + pumpTime_str + "s (total: " + totalPumpTime_str + "s)");
+}
+
 void setup() {
   Serial.begin(115200);
   pinMode(waterPumpPort, OUTPUT);
@@ -80,6 +106,8 @@ void setup() {
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
   server.on("/", handle_OnConnect);
+  server.on("/download", handle_Download);
+  server.on("/pause", handle_Pause);
   //server.on("/someaction", handle_action);
   server.onNotFound(handle_NotFound);
   server.begin();
@@ -87,7 +115,7 @@ void setup() {
   log("Settings: " + String(wateringAmountPerDay_L) + " | " + String(wateringAmountPerTime_L) + " | " + String(L_per_s) + " | " + " | " + String(availableWaterInL) + " | ");
 }
 
-void handle_OnConnect() {
+void sendHTML() {
   int waterLevelVal = 1024 - analogRead(A0);
   String ptr = "<!DOCTYPE html> <html>\n";
   ptr += "<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n";
@@ -106,15 +134,41 @@ void handle_OnConnect() {
   ptr += "<h1>ESP8266 Irrigation System</h1>";
   ptr += "<p>Day: " + String(currentDay) + "</p>";
   ptr += "<p>Time: " + getTimeStr(runTime) + "</p>";
-  ptr += "<p>Time (last watering): " + getTimeStr(lastWatering_ms) + "</p>";
-  ptr += "<p>Available water: " + String(availableWaterInL) + "</p>";
-  ptr += "<p>Watering amount done today: " + String(wateringAmountDoneToday_L) + " L / " + String(wateringAmountPerDay_L) + "L</p>";
+  ptr += "<p>Time (last irrigation): " + getTimeStr(lastWatering_ms) + "</p>";
+  ptr += "<p>Available water: " + String(availableWaterInL) + " L</p>";
+  ptr += "<p>Watering amount done today: " + String(wateringAmountDoneToday_L) + " L / " + String(wateringAmountPerDay_L) + " L</p>";
   ptr += "<p>Water level value: " + String(waterLevelVal) + "</p>";
   ptr += "<p>Pump status: " + String(pumpRunState ? "on" : "off") + "</p>";
+  ptr +="<a class=\"button button-" + String(paused?"on":"off") + "\" href=\"/pause\">" + String(paused?"START":"PAUSE") + "</a>\n";
+  ptr +="<a class=\"button\" href=\"/download\">Download Log File</a>\n";
   ptr += "</body></html>";
   server.send(200, "text/html", ptr);
 }
 
+void handle_OnConnect() {
+  sendHTML();
+}
+
+void handle_Pause() {
+  paused = !paused;
+  if(pumpRunState) {
+    pumpOff();
+  }
+  sendHTML();
+}
+
+void handle_Download() {
+  File download = SPIFFS.open(logFilePath, "r");
+  if (download) {
+    server.sendHeader("Content-Type", "text/text");
+    server.sendHeader("Content-Disposition", "attachment; filename=log.txt");
+    server.sendHeader("Connection", "close");
+    server.streamFile(download, "application/octet-stream");
+    download.close();
+  } else {
+    server.send(400, "text/plain", "Log file not found");
+  }
+}
 void handle_NotFound() {
   server.send(404, "text/plain", "Not found");
 }
@@ -128,44 +182,35 @@ void loop() {
     Serial.println("Today is Day " + String(day));
     wateringAmountDoneToday_L = 0;
   }
+
+  server.handleClient();
+
+  if(paused) {
+    delay(1000);
+    return;
+  }
+
   int waterLevelVal = 1024 - analogRead(A0);
   int moistureVal = !digitalRead(moisturePort);
   Serial.println("WaterLevel:" + String(waterLevelVal));
   Serial.println("Moisture:" + String(moistureVal));
   Serial.println("AvailableWater:" + String(availableWaterInL));
 
-  server.handleClient();
 
-  //turn on pump
+  //turn pump on
   if (
     !pumpRunState
     && availableWaterInL > 0
     && waterLevelVal < 50
+    && wateringAmountDoneToday_L < wateringAmountPerDay_L
     && (lastWatering_ms == -1 || runTime > lastWatering_ms + wateringInterval_h * 3600000)) {
     log("Turning pump on. WaterLevel:" + String(waterLevelVal) + " Moisture:" + String(moistureVal) + " AvailableWater:" + String(availableWaterInL));
-    Serial.println("#Turning pump on");
-    digitalWrite(waterPumpPort, HIGH);
-    pumpRunState = true;
-    stateChangeTime = runTime;
-    double maxPumpTime_s = min(min(availableWaterInL / L_per_s, wateringAmountPerTime_L / L_per_s), (wateringAmountPerDay_L - wateringAmountDoneToday_L) / L_per_s);
-    Serial.println("Pump time: " + String(maxPumpTime_s) + " s");
-    pumpUntil_ms = stateChangeTime + long(maxPumpTime_s * 1000);
-    Serial.println("Pump until time: " + String(pumpUntil_ms) + " ms");
+    pumpOn();
   }
 
   //turn pump off
   if (pumpRunState && (runTime > pumpUntil_ms || waterLevelVal > 100)) {
-    digitalWrite(waterPumpPort, LOW);
-    pumpRunState = false;
-    unsigned long pumpTime_ms = runTime - stateChangeTime;
-    totalPumpTime_ms += pumpTime_ms;
-    auto pumpTime_str = String(pumpTime_ms / 1000);
-    auto totalPumpTime_str = String(totalPumpTime_ms / 1000);
-    availableWaterInL -= double(pumpTime_ms) * L_per_s / 1000.;
-    wateringAmountDoneToday_L += double(pumpTime_ms) * L_per_s / 1000.;
-    lastWatering_ms = runTime;
-    log("Turning pump off after " + pumpTime_str + "s (total: " + totalPumpTime_str + "s)");
-    Serial.println("#Turning pump off after " + pumpTime_str + "s (total: " + totalPumpTime_str + "s)");
+    pumpOff();
   }
   delay(1000);
 }
