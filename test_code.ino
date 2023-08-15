@@ -21,6 +21,7 @@ const unsigned long wateringInterval_h = 3;  //3h
 const double wateringAmountPerDay_L = 1;
 const double wateringAmountPerTime_L = wateringAmountPerDay_L / 24 * double(wateringInterval_h) * 2;  //at max can do twice the amount each time
 double wateringAmountDoneToday_L = 0;
+int waterLevelThreshold = 200;
 const unsigned long msInDay = 1000 * 60 * 60 * 24;
 int currentDay = 0;
 
@@ -54,7 +55,7 @@ void log(const String& logText) {
     }
   }
   auto runTime_str = getTimeStr(runTime);
-  file.println(runTime_str + logText);
+  file.println(runTime_str + " " + logText);
   file.close();
 }
 
@@ -108,39 +109,66 @@ void setup() {
   server.on("/", handle_OnConnect);
   server.on("/download", handle_Download);
   server.on("/pause", handle_Pause);
-  //server.on("/someaction", handle_action);
+  server.on("/settings", handle_Settings);
   server.onNotFound(handle_NotFound);
   server.begin();
+  logSettings();
+}
 
-  log("Settings: " + String(wateringAmountPerDay_L) + " | " + String(wateringAmountPerTime_L) + " | " + String(L_per_s) + " | " + " | " + String(availableWaterInL) + " | ");
+void logSettings() {
+  log(String("Settings:")
+   + "\nwateringAmountPerDay_L = " + String(wateringAmountPerDay_L)
+   + "\nwateringAmountPerTime_L = " + String(wateringAmountPerTime_L)
+   + "\nL_per_s = " + String(L_per_s)
+   + "\navailableWaterInL = " + String(availableWaterInL)
+   + "\nwaterLevelThreshold = " + String(waterLevelThreshold)
+   );
 }
 
 void sendHTML() {
   int waterLevelVal = 1024 - analogRead(A0);
+  char waterLevelVal_str[5];
+  sprintf(waterLevelVal_str, "%02.1f%%", waterLevelVal*100./1024.);
   String ptr = "<!DOCTYPE html> <html>\n";
   ptr += "<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n";
   ptr += "<title>ESP8266 Irrigation System</title>\n";
   ptr += "<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}\n";
   ptr += "body{margin-top: 50px;} h1 {color: #444444;margin: 50px auto 30px;} h3 {color: #444444;margin-bottom: 50px;}\n";
-  ptr += ".button {display: block;width: 80px;background-color: #1abc9c;border: none;color: white;padding: 13px 30px;text-decoration: none;font-size: 25px;margin: 0px auto 35px;cursor: pointer;border-radius: 4px;}\n";
+  ptr += ".button {display: block;width: 80px;background-color: #1abc9c;border: none;color: white;padding: 13px 20px;text-decoration: none;font-size: 20px;margin: 0px auto 35px;cursor: pointer;border-radius: 4px;}\n";
   ptr += ".button-on {background-color: #1abc9c;}\n";
   ptr += ".button-on:active {background-color: #16a085;}\n";
   ptr += ".button-off {background-color: #34495e;}\n";
   ptr += ".button-off:active {background-color: #2c3e50;}\n";
+  ptr += ".button-dl {background-color: #002966; font-size: 14px}\n";
+  ptr += ".button-dl:active {background-color: #001f4d;}\n";
   ptr += "p {font-size: 14px;color: #888;margin-bottom: 10px;}\n";
   ptr += "</style>\n";
   ptr += "</head>\n";
   ptr += "<body>\n";
+
   ptr += "<h1>ESP8266 Irrigation System</h1>";
+
   ptr += "<p>Day: " + String(currentDay) + "</p>";
   ptr += "<p>Time: " + getTimeStr(runTime) + "</p>";
-  ptr += "<p>Time (last irrigation): " + getTimeStr(lastWatering_ms) + "</p>";
+  ptr += "<p>Time (last irrigation): " + (lastWatering_ms==-1?"never":getTimeStr(lastWatering_ms)) + "</p>";
   ptr += "<p>Available water: " + String(availableWaterInL) + " L</p>";
-  ptr += "<p>Watering amount done today: " + String(wateringAmountDoneToday_L) + " L / " + String(wateringAmountPerDay_L) + " L</p>";
-  ptr += "<p>Water level value: " + String(waterLevelVal) + "</p>";
-  ptr += "<p>Pump status: " + String(pumpRunState ? "on" : "off") + "</p>";
+  ptr += "<p>Water amount (today): " + String(wateringAmountDoneToday_L) + " L / " + String(wateringAmountPerDay_L) + " L</p>";
+  ptr += "<p>Soil moisture: " + String(waterLevelVal) + " (" + String(waterLevelVal_str) + ") -- Threshold: " + String(waterLevelThreshold) + "</p>";
+  ptr += "<p style=\"margin-bottom:1cm\">Pump status: " + String(pumpRunState ? "on" : "off") + "</p>";
+
+  ptr +="<form action=\"/settings\">";
+  ptr +="  Water level threshold: <input type=\"number\" name=\"threshold\" min=0 max=1023 value=" + String(waterLevelThreshold) + ">";
+  ptr +="  <input type=\"submit\" value=\"Submit\">";
+  ptr +="</form><br>";
+
+  ptr +="<form action=\"/settings\">";
+  ptr +="  Available water (L): <input type=\"number\" name=\"availablewater\" min=0 max=500 step=\"any\" value=" + String(availableWaterInL) + ">";
+  ptr +="  <input type=\"submit\" value=\"Submit\">";
+  ptr +="</form><br>";
+
   ptr +="<a class=\"button button-" + String(paused?"on":"off") + "\" href=\"/pause\">" + String(paused?"START":"PAUSE") + "</a>\n";
-  ptr +="<a class=\"button\" href=\"/download\">Download Log File</a>\n";
+  ptr +="<a class=\"button button-dl\" href=\"/download\">Download Log</a>\n";
+  
   ptr += "</body></html>";
   server.send(200, "text/html", ptr);
 }
@@ -154,6 +182,32 @@ void handle_Pause() {
   if(pumpRunState) {
     pumpOff();
   }
+  sendHTML();
+}
+
+void handle_Settings() {
+  for (int i=0; i<server.args(); i++) {
+    if (server.argName(i) == "threshold") {
+      const int val = abs(server.arg("threshold").toInt());
+      if(val>=1024) {
+        server.send(400, "text/plain", "Wrong value");
+        return;
+      }
+      waterLevelThreshold = val;
+    } else if (server.argName(i) == "availablewater") {
+      const float val = fabs(server.arg("availablewater").toFloat());
+      if(val>=500.) {
+        server.send(400, "text/plain", "Wrong value");
+        return;
+      }
+      availableWaterInL = val;
+    } else {
+      logSettings();
+      server.send(400, "text/plain", "Cannot resolve paramater");
+      return;
+    }
+  }
+  logSettings();
   sendHTML();
 }
 
@@ -201,7 +255,7 @@ void loop() {
   if (
     !pumpRunState
     && availableWaterInL > 0
-    && waterLevelVal < 50
+    && waterLevelVal < waterLevelThreshold
     && wateringAmountDoneToday_L < wateringAmountPerDay_L
     && (lastWatering_ms == -1 || runTime > lastWatering_ms + wateringInterval_h * 3600000)) {
     log("Turning pump on. WaterLevel:" + String(waterLevelVal) + " Moisture:" + String(moistureVal) + " AvailableWater:" + String(availableWaterInL));
@@ -209,7 +263,7 @@ void loop() {
   }
 
   //turn pump off
-  if (pumpRunState && (runTime > pumpUntil_ms || waterLevelVal > 100)) {
+  if (pumpRunState && (runTime > pumpUntil_ms || waterLevelVal > (waterLevelThreshold+30)*1.2)) {
     pumpOff();
   }
   delay(1000);
