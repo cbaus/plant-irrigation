@@ -10,11 +10,11 @@ make
 sudo make load
 ```
 
-* In Arduino IDE --> Preferences --> Addiontal boards maanager URLS --> add
+* In Arduino IDE `-->` Preferences `-->` Addiontal boards maanager URLS `-->` add
 ```
 http://arduino.esp8266.com/stable/package_esp8266com_index.json
 ```
---> Boards `Node MCU 1.0 (ESP 12)`
+* `-->` Boards `Node MCU 1.0 (ESP 12E)`
 
 * Edit `credentials.h`
 * Deploy code (Crtl + u)
