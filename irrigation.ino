@@ -18,8 +18,8 @@ double availableWaterInL = 10;
 const double L_per_s = 0.052;
 unsigned long lastWatering_ms = -1;
 const unsigned long wateringInterval_h = 3;  //3h
-const double wateringAmountPerDay_L = 1;
-const double wateringAmountPerTime_L = wateringAmountPerDay_L / 24 * double(wateringInterval_h) * 2;  //at max can do twice the amount each time
+double wateringAmountPerDay_L = 1;
+double wateringAmountPerTime_L = wateringAmountPerDay_L / 24. * double(wateringInterval_h) * 2.;  //at max can do twice the amount each time
 double wateringAmountDoneToday_L = 0;
 int waterLevelThreshold = 200;
 const unsigned long msInDay = 1000 * 60 * 60 * 24;
@@ -166,6 +166,11 @@ void sendHTML() {
   ptr +="  <input type=\"submit\" value=\"Submit\">";
   ptr +="</form><br>";
 
+  ptr +="<form action=\"/settings\">";
+  ptr +="  Water per day (L): <input type=\"number\" name=\"waterperday\" min=0 max=100 step=\"any\" value=" + String(wateringAmountPerDay_L) + ">";
+  ptr +="  <input type=\"submit\" value=\"Submit\">";
+  ptr +="</form><br>";
+
   ptr +="<a class=\"button button-" + String(paused?"on":"off") + "\" href=\"/pause\">" + String(paused?"START":"PAUSE") + "</a>\n";
   ptr +="<a class=\"button button-dl\" href=\"/download\">Download Log</a>\n";
   
@@ -201,6 +206,14 @@ void handle_Settings() {
         return;
       }
       availableWaterInL = val;
+    } else if (server.argName(i) == "waterperday") {
+      const float val = fabs(server.arg("waterperday").toFloat());
+      if(val>=100.) {
+        server.send(400, "text/plain", "Wrong value");
+        return;
+      }
+      wateringAmountPerDay_L = val;
+      wateringAmountPerTime_L = wateringAmountPerDay_L / 24. * double(wateringInterval_h) * 2.;
     } else {
       logSettings();
       server.send(400, "text/plain", "Cannot resolve paramater");
